@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(chmod +x *)",
+      "Bash(mkdir -p /Users/aniketsindhu/.claude/skills)",
+      "Bash(cp /Users/aniketsindhu/Documents/projects/claude-warn-light/skill.md /Users/aniketsindhu/.claude/skills/warn-light.md)",
+      "Bash(pip3 install *)"
+    ]
+  }
+}
