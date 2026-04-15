@@ -97,15 +97,24 @@ class Light:
             return {"is_on": False}
 
     def set_state(self, state):
-        if not state.get("is_on", True):
+        mode = state.get("mode", "white")
+        hsv  = state.get("colour_hsv", "")
+        bri  = max(10, min(1000, int(state.get("brightness", 1000))))
+
+        # Tuya bulbs store their last colour even when off.
+        # If is_on is False but we have a valid colour or brightness, the bulb
+        # was on before and its state was captured mid-blink (light briefly off).
+        # Restore as on so the user gets their original colour back.
+        has_colour = mode == "colour" and hsv and hsv != "000000000000"
+        was_on = state.get("is_on", True) or has_colour or bri > 10
+
+        if not was_on:
             self._dev.set_value(20, False)
             return
-        mode = state.get("mode", "white")
-        hsv = state.get("colour_hsv", "")
-        if mode == "colour" and hsv:
+
+        if has_colour:
             self._dev.set_multiple_values({"20": True, "21": "colour", "24": hsv})
         else:
-            bri = max(10, min(1000, int(state.get("brightness", 1000))))
             self._dev.set_multiple_values({"20": True, "21": "white", "22": bri})
 
     def set_rgb(self, r, g, b):

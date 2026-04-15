@@ -85,12 +85,16 @@ def _blink_green_then_restore():
         if not os.path.exists(STATE_PATH):
             return
         try:
-            for _ in range(2):
-                _light.set_rgb(0, 220, 0)
-                time.sleep(0.4)
-                _light.turn_off()
-                time.sleep(0.3)
-            _restore_state()
+            # Blink: green ON → OFF → green ON → restore immediately
+            # Don't end on turn_off — go straight to restore after last green
+            # so there's no dark gap before the original colour returns.
+            _light.set_rgb(0, 220, 0)
+            time.sleep(0.45)
+            _light.turn_off()
+            time.sleep(0.3)
+            _light.set_rgb(0, 220, 0)
+            time.sleep(0.45)
+            _restore_state()   # last green fades into original colour
         except Exception as e:
             log(f"blink error: {e}")
 
