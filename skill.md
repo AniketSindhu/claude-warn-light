@@ -1,161 +1,97 @@
 ---
 name: warn-light
-description: Set up a Wipro (Tuya) smart bulb to turn red when Claude asks for approval and blink green when approved.
+description: Set up a smart bulb to turn red when Claude asks for approval and blink green when approved. Supports LIFX, Philips Hue, Home Assistant, Yeelight, WLED, Tuya/Wipro.
 ---
 
-You are helping the user install and configure the **claude-warn-light** skill. This skill turns a Wipro Wi-Fi smart bulb red whenever Claude Code is waiting for the user's approval, then blinks it green twice when the user approves.
+You are helping the user install and configure **claude-warn-light**.
 
-Follow these steps precisely.
+When this skill is invoked, guide the user through these steps.
 
 ---
 
-## Step 1 — Clone or locate the repo
+## What it does
 
-Ask the user if they already have the `claude-warn-light` repo. If not, tell them to clone it:
+- Light turns **RED** when Claude is waiting for your approval
+- Blinks **GREEN twice** when you approve
+- Restores original colour when you deny or the session ends
 
-```
+## Supported lights (ordered by setup ease)
+
+| Brand | Friction |
+|---|---|
+| LIFX | Zero — just on same Wi-Fi |
+| Philips Hue | Press button on bridge |
+| Home Assistant | URL + token — works with **any** brand |
+| Yeelight / Xiaomi | Enable LAN mode in app |
+| WLED | IP address |
+| Tuya / Wipro / Smart Life | Needs IoT developer key |
+
+---
+
+## Installation
+
+**Step 1 — Get the code**
+
+```bash
 git clone https://github.com/YOUR_USERNAME/claude-warn-light.git
 cd claude-warn-light
 ```
 
-If they already have it, ask for the path.
+**Step 2 — Run the setup wizard**
+
+```bash
+python3 setup.py
+```
+
+The wizard will:
+1. Scan your local network and show what lights it finds
+2. Ask you to pick one (auto-detected lights are highlighted)
+3. Walk through the minimum config for that type
+4. Run a live test (red → green blink → restore)
+5. Register the Claude Code hooks automatically
+
+That's it. No manual editing of settings files.
 
 ---
 
-## Step 2 — Install tinytuya
+## After setup
 
-Run in the repo directory:
-
-```
-pip3 install tinytuya
-```
-
----
-
-## Step 3 — Get Wipro light credentials
-
-Wipro Wi-Fi bulbs use the Tuya platform. The user needs three values:
-
-- **Device ID** — a ~22-character string uniquely identifying the bulb
-- **Device IP** — the local IP of the bulb on their Wi-Fi (e.g. `192.168.1.42`)
-- **Local Key** — a 16-character encryption key
-
-**Easiest way to get these:**
-
-1. Create a free account at https://iot.tuya.com
-2. Go to **Cloud → Create a Cloud Project** (pick any name, select "Smart Home")
-3. Under **Devices → Link Tuya App Account**, scan the QR code with the Wipro/Smart Life app
-4. Your devices appear — copy the **Device ID**
-5. Run the tinytuya wizard to auto-discover the IP and Local Key:
-
-   ```
-   python3 -m tinytuya wizard
-   ```
-
-   Enter the Tuya API credentials when prompted. It will write `devices.json` with all values.
-
-**Alternative (no cloud account):**
-
-Run the local network scan if you already know the Device ID and Local Key:
-
-```
-python3 -m tinytuya scan
+Re-run setup anytime to switch lights:
+```bash
+python3 setup.py
 ```
 
----
-
-## Step 4 — Write the config file
-
-Create `~/.claude/warn-light-config.json` with the values from Step 3:
-
-```json
-{
-  "device_id": "YOUR_DEVICE_ID",
-  "device_ip": "192.168.1.XXX",
-  "local_key": "YOUR_LOCAL_KEY",
-  "version": "3.3",
-  "state_file": "~/.claude/warn-light-state.json"
-}
+Test the light sequence manually:
+```bash
+python3 controller.py test
 ```
 
-> Try version `3.1` if `3.3` does not work.
-
----
-
-## Step 5 — Register the hooks
-
-Add the following to `~/.claude/settings.json` (merge with any existing content):
-
-```json
-{
-  "hooks": {
-    "Notification": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 /FULL/PATH/TO/claude-warn-light/hooks/on_notification.py"
-          }
-        ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 /FULL/PATH/TO/claude-warn-light/hooks/on_pre_tool.py"
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 /FULL/PATH/TO/claude-warn-light/hooks/on_stop.py"
-          }
-        ]
-      }
-    ]
-  }
-}
+Manually restore if the light gets stuck red:
+```bash
+python3 controller.py restore
 ```
-
-Replace `/FULL/PATH/TO/claude-warn-light` with the actual absolute path to the cloned repo.
-
-**Or run the automated install script** which does Steps 4 and 5 interactively:
-
-```
-bash install.sh
-```
-
----
-
-## Step 6 — Test the setup
-
-```
-python3 light_controller.py test
-```
-
-The bulb will:
-1. Turn **red** (simulating an approval prompt)
-2. Blink **green** twice (simulating an approval)
-3. Return to its original colour
 
 ---
 
 ## Troubleshooting
 
-| Symptom | Fix |
+| Problem | Fix |
 |---|---|
-| `tinytuya not installed` | Run `pip3 install tinytuya` |
-| `Config not found` | Check `~/.claude/warn-light-config.json` exists |
-| Light does not respond | Check IP is reachable: `ping <device_ip>`. Ensure phone and Mac are on same Wi-Fi |
-| Wrong colour / flickering | Try changing `"version"` between `"3.1"` and `"3.3"` |
-| Light stays red after denial | Hook `on_stop.py` should restore it; test with `python3 light_controller.py restore` |
+| Light doesn't respond | Check it's on the same Wi-Fi. Run `python3 controller.py test` |
+| Light stays red after denial | Run `python3 controller.py restore` |
+| Config lost | Re-run `python3 setup.py` |
+| LIFX not found | Restart the bulb; ensure same subnet |
+| Yeelight not found | App → bulb → Settings → LAN Control → ON |
+| Hue button didn't work | Press within 30 seconds and try again |
 
 ---
 
-After setup, the skill operates fully automatically — no further interaction needed. The hooks run silently in the background and never block Claude.
+## How hooks work
+
+The wizard registers three Claude Code hooks in `~/.claude/settings.json`:
+
+- **Notification** → turns light RED (Claude is waiting for attention)
+- **PreToolUse** → blinks GREEN + restores (user approved, tool about to run)
+- **Stop** → restores (session ended or denied while red)
+
+All hooks fail silently so they never block Claude.
