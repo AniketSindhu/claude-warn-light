@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-# PreToolUse — fires before every tool → turn light RED (save state first)
+# PostToolUse — fires after every tool → blink GREEN twice then restore
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
     from send import ensure_daemon_and_send
-    ensure_daemon_and_send("save-and-red")
+    ensure_daemon_and_send("blink-green-restore")
 except Exception:
     pass

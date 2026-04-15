@@ -3,7 +3,7 @@
 claude-warn-light daemon
 ────────────────────────
 Persistent background process that keeps the light connection warm.
-Hooks write a single line to the Unix socket; the daemon executes instantly.
+Hooks write a single line to the Unix socket; the daemon responds instantly.
 
 Start:   python3 daemon.py start
 Stop:    python3 daemon.py stop
@@ -11,6 +11,7 @@ Status:  python3 daemon.py status
 Restart: python3 daemon.py restart
 """
 
+import fcntl
 import json
 import os
 import signal
@@ -20,47 +21,52 @@ import sys
 import threading
 import time
 
-REPO       = os.path.dirname(os.path.abspath(__file__))
-SOCK_PATH  = "/tmp/warn-light.sock"
-PID_PATH   = "/tmp/warn-light.pid"
-LOG_PATH   = "/tmp/warn-light.log"
+REPO        = os.path.dirname(os.path.abspath(__file__))
+SOCK_PATH   = "/tmp/warn-light.sock"
+PID_PATH    = "/tmp/warn-light.pid"
+LOCK_PATH   = "/tmp/warn-light.lock"   # prevents multiple daemon instances
+LOG_PATH    = "/tmp/warn-light.log"
 CONFIG_PATH = os.path.expanduser("~/.claude/warn-light-config.json")
 STATE_PATH  = os.path.expanduser("~/.claude/warn-light-state.json")
 
 sys.path.insert(0, REPO)
 
-# ── Global state ──────────────────────────────────────────────────────────────
+# ── Globals ───────────────────────────────────────────────────────────────────
 _light  = None
 _config = None
-_lock   = threading.Lock()
+_lock   = threading.Lock()   # serialises light commands
 
 
 def log(msg):
     ts = time.strftime("%H:%M:%S")
     line = f"[{ts}] {msg}"
+    # When running as daemon, stdout is already redirected to the log file.
+    # Writing to the file separately would duplicate every line.
+    if sys.stdout.isatty():
+        # Interactive — write to file manually since stdout isn't redirected
+        try:
+            with open(LOG_PATH, "a") as f:
+                f.write(line + "\n")
+        except Exception:
+            pass
     print(line, flush=True)
-    try:
-        with open(LOG_PATH, "a") as f:
-            f.write(line + "\n")
-    except Exception:
-        pass
 
 
-# ── Light helpers (run inside daemon, modules already imported) ───────────────
+# ── Light operations (always called under _lock) ──────────────────────────────
 
-def _do_save_state():
+def _save_state():
     if os.path.exists(STATE_PATH):
-        return  # Already saved — don't overwrite with current red state
+        return  # don't overwrite — already saved the real original
     try:
         state = _light.get_state()
         with open(STATE_PATH, "w") as f:
             json.dump(state, f)
-        log(f"State saved: {state}")
+        log(f"Saved state: {state}")
     except Exception as e:
         log(f"save_state error: {e}")
 
 
-def _do_restore_state():
+def _restore_state():
     if not os.path.exists(STATE_PATH):
         return
     try:
@@ -73,63 +79,49 @@ def _do_restore_state():
         log(f"restore_state error: {e}")
 
 
-def _do_blink_green_restore():
-    if not os.path.exists(STATE_PATH):
-        log("blink-green-restore: no state file, skipping")
-        return
-    try:
-        for _ in range(2):
-            _light.set_rgb(0, 220, 0)
-            time.sleep(0.4)
-            _light.turn_off()
-            time.sleep(0.3)
-        _do_restore_state()
-    except Exception as e:
-        log(f"blink_green error: {e}")
-
-
-def _reconnect():
-    global _light
-    log("Reconnecting to light...")
-    try:
-        from controller import get_light
-        _light = get_light(_config)
-        _setup_persistent()
-        log("Reconnected")
-    except Exception as e:
-        log(f"Reconnect failed: {e}")
-
-
-def _setup_persistent():
-    """Ask the backend to keep its socket open between calls (Tuya-specific)."""
-    if _config.get("backend") == "tuya":
+def _blink_green_then_restore():
+    """Called in a background thread — blinks green then restores."""
+    with _lock:
+        if not os.path.exists(STATE_PATH):
+            return
         try:
-            _light._dev.set_socketPersistent(True)
-            log("Tuya persistent socket enabled")
-        except Exception:
-            pass
+            for _ in range(2):
+                _light.set_rgb(0, 220, 0)
+                time.sleep(0.4)
+                _light.turn_off()
+                time.sleep(0.3)
+            _restore_state()
+        except Exception as e:
+            log(f"blink error: {e}")
 
 
-def _heartbeat_loop():
-    """Send keepalive pings every 7 s so the Tuya socket stays open."""
-    while True:
-        time.sleep(7)
-        if _config.get("backend") == "tuya":
-            try:
-                with _lock:
-                    _light._dev.heartbeat(nowait=True)
-            except Exception:
-                with _lock:
-                    _reconnect()
+# ── Command handlers ──────────────────────────────────────────────────────────
+
+def handle_save_and_red():
+    with _lock:
+        _save_state()
+        _light.set_rgb(255, 0, 0)
+    return b"ok\n"
 
 
-# ── Command dispatcher ────────────────────────────────────────────────────────
+def handle_blink_green_restore():
+    # Respond immediately, run blink in background so client doesn't time out
+    if os.path.exists(STATE_PATH):
+        threading.Thread(target=_blink_green_then_restore, daemon=True).start()
+    return b"ok\n"
+
+
+def handle_restore():
+    with _lock:
+        _restore_state()
+    return b"ok\n"
+
 
 COMMANDS = {
-    "save-and-red": lambda: (_do_save_state(), _light.set_rgb(255, 0, 0)),
-    "blink-green-restore": _do_blink_green_restore,
-    "restore": _do_restore_state,
-    "ping": lambda: None,
+    "save-and-red":        handle_save_and_red,
+    "blink-green-restore": handle_blink_green_restore,
+    "restore":             handle_restore,
+    "ping":                lambda: b"ok\n",
 }
 
 
@@ -139,19 +131,27 @@ def handle_client(conn):
         log(f"← {cmd}")
         fn = COMMANDS.get(cmd)
         if fn:
-            with _lock:
-                fn()
-            conn.send(b"ok\n")
+            resp = fn()
+            conn.send(resp)
         else:
             conn.send(b"unknown\n")
     except Exception as e:
-        log(f"handle_client error: {e}")
-        try:
-            conn.send(f"err:{e}\n".encode())
-        except Exception:
-            pass
+        log(f"client error: {e}")
     finally:
         conn.close()
+
+
+# ── Heartbeat keeps Tuya socket alive ─────────────────────────────────────────
+
+def _heartbeat_loop():
+    while True:
+        time.sleep(7)
+        if _config and _config.get("backend") == "tuya":
+            try:
+                with _lock:
+                    _light._dev.heartbeat(nowait=True)
+            except Exception:
+                pass   # will reconnect on next real command
 
 
 # ── Server ────────────────────────────────────────────────────────────────────
@@ -159,38 +159,49 @@ def handle_client(conn):
 def run_server():
     global _light, _config
 
-    # Load config + connect
+    # Exclusive lock — only one daemon at a time
+    lock_file = open(LOCK_PATH, "w")
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except IOError:
+        log("Another daemon instance is already running. Exiting.")
+        sys.exit(1)
+
     with open(CONFIG_PATH) as f:
         _config = json.load(f)
 
     log(f"Connecting to {_config.get('backend')} light...")
     from controller import get_light
     _light = get_light(_config)
-    _setup_persistent()
-    log("Light connected")
 
-    # Start heartbeat thread
+    if _config.get("backend") == "tuya":
+        try:
+            _light._dev.set_socketPersistent(True)
+            log("Tuya persistent socket enabled")
+        except Exception:
+            pass
+
+    log("Light connected")
     threading.Thread(target=_heartbeat_loop, daemon=True).start()
 
     # Write PID
     with open(PID_PATH, "w") as f:
         f.write(str(os.getpid()))
 
-    # Remove stale socket
     if os.path.exists(SOCK_PATH):
         os.remove(SOCK_PATH)
 
     server = socket_lib.socket(socket_lib.AF_UNIX, socket_lib.SOCK_STREAM)
     server.bind(SOCK_PATH)
     server.listen(8)
-    log(f"Listening on {SOCK_PATH}")
+    log(f"Ready on {SOCK_PATH}")
 
     def shutdown(sig, frame):
         log("Shutting down")
         server.close()
-        for path in (SOCK_PATH, PID_PATH):
-            if os.path.exists(path):
-                os.remove(path)
+        for p in (SOCK_PATH, PID_PATH, LOCK_PATH):
+            try: os.remove(p)
+            except FileNotFoundError: pass
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, shutdown)
@@ -206,66 +217,54 @@ def run_server():
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
-def get_pid():
-    if os.path.exists(PID_PATH):
-        try:
-            pid = int(open(PID_PATH).read().strip())
-            os.kill(pid, 0)   # check process is alive
-            return pid
-        except (ValueError, ProcessLookupError, PermissionError):
-            pass
-    return None
+def _get_pid():
+    try:
+        pid = int(open(PID_PATH).read().strip())
+        os.kill(pid, 0)
+        return pid
+    except Exception:
+        return None
 
 
 def cmd_start():
-    if get_pid():
+    if _get_pid():
         print("Daemon already running")
         return
     log_f = open(LOG_PATH, "a")
-    proc = subprocess.Popen(
+    subprocess.Popen(
         [sys.executable, __file__, "_serve"],
         stdout=log_f, stderr=log_f,
-        close_fds=True,
+        start_new_session=True,   # fully detach from parent
     )
-    # Wait up to 8 s for it to become ready
     for _ in range(40):
         time.sleep(0.2)
         if os.path.exists(SOCK_PATH):
-            print(f"Daemon started (pid {proc.pid})")
+            pid = _get_pid()
+            print(f"Daemon started (pid {pid})")
             return
-    print("Daemon did not start in time — check log:", LOG_PATH)
+    print("Daemon did not start — check log:", LOG_PATH)
 
 
 def cmd_stop():
-    pid = get_pid()
-    if not pid:
-        print("Daemon not running")
-        return
-    os.kill(pid, signal.SIGTERM)
-    print(f"Daemon stopped (pid {pid})")
+    # Kill every daemon instance, not just the one in PID file
+    os.system("pkill -f 'daemon.py _serve' 2>/dev/null")
+    for p in (SOCK_PATH, PID_PATH, LOCK_PATH):
+        try: os.remove(p)
+        except FileNotFoundError: pass
+    print("Daemon stopped")
 
 
 def cmd_status():
-    pid = get_pid()
-    if pid:
-        print(f"Running (pid {pid}), socket: {SOCK_PATH}")
-    else:
-        print("Not running")
+    pid = _get_pid()
+    print(f"Running (pid {pid})" if pid else "Not running")
 
 
 if __name__ == "__main__":
     action = sys.argv[1] if len(sys.argv) > 1 else "start"
-    if action == "_serve":
-        run_server()
-    elif action == "start":
-        cmd_start()
-    elif action == "stop":
-        cmd_stop()
-    elif action == "restart":
-        cmd_stop()
-        time.sleep(1)
-        cmd_start()
-    elif action == "status":
-        cmd_status()
-    else:
-        print(f"Usage: python3 daemon.py start|stop|restart|status")
+    {
+        "_serve":  run_server,
+        "start":   cmd_start,
+        "stop":    cmd_stop,
+        "restart": lambda: (cmd_stop(), time.sleep(1), cmd_start()),
+        "status":  cmd_status,
+    }.get(action, lambda: print("Usage: daemon.py start|stop|restart|status"))()

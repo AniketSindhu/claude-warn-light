@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.pyo
+tinytuya.json
+devices.json
+snapshot.json
+tuya-raw.json
