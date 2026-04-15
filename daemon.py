@@ -115,6 +115,21 @@ def handle_blink_green_restore():
     return b"ok\n"
 
 
+def handle_flash_green():
+    """Single quick green flash — immediate approval confirmation, no restore.
+    Runs in background so it doesn't block the hook script."""
+    def _flash():
+        with _lock:
+            try:
+                _light.set_rgb(0, 220, 0)
+                time.sleep(0.4)
+                _light.set_rgb(255, 0, 0)   # back to red — more work coming
+            except Exception as e:
+                log(f"flash error: {e}")
+    threading.Thread(target=_flash, daemon=True).start()
+    return b"ok\n"
+
+
 def handle_restore():
     with _lock:
         _restore_state()
@@ -123,6 +138,7 @@ def handle_restore():
 
 COMMANDS = {
     "save-and-red":        handle_save_and_red,
+    "flash-green":         handle_flash_green,
     "blink-green-restore": handle_blink_green_restore,
     "restore":             handle_restore,
     "ping":                lambda: b"ok\n",
@@ -187,6 +203,12 @@ def run_server():
 
     log("Light connected")
     threading.Thread(target=_heartbeat_loop, daemon=True).start()
+
+    # Clear any stale state from a previous session that didn't clean up.
+    # Without this, a stuck red state gets restored as if it were the original.
+    if os.path.exists(STATE_PATH):
+        os.remove(STATE_PATH)
+        log("Cleared stale state file from previous session")
 
     # Write PID
     with open(PID_PATH, "w") as f:
