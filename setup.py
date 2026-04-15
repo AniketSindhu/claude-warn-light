@@ -361,20 +361,24 @@ def main():
     # Step 5: test
     p()
     h("Testing connection...")
+    test_passed = False
     try:
         import controller
         controller.cmd_test()
         ok("Light test passed!")
+        test_passed = True
     except Exception as e:
         err(f"Test failed: {e}")
-        warn("Check the light is powered on and on the same Wi-Fi, then re-run setup.")
-        sys.exit(1)
+        warn("Hooks will still be registered — fix the light and re-run to retest.")
 
-    # Step 6: register hooks
+    # Step 6: register hooks (always, even if test failed)
     p()
     h("Registering Claude Code hooks...")
     inject_hooks()
     ok(f"Hooks added to {SETTINGS}")
+
+    if not test_passed:
+        warn("Re-run 'python3 controller.py test' once the light is reachable.")
 
     # Done
     p()

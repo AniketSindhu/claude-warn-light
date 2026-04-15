@@ -62,7 +62,12 @@ def restore_state(light):
 def cmd_save_and_red():
     config = load_config()
     light = get_light(config)
-    save_state(light)
+    # Only save original state on the FIRST notification.
+    # If the state file already exists we're already in "waiting" mode —
+    # don't overwrite it or the saved state becomes red and restore brings
+    # you back to red instead of the real original colour.
+    if not os.path.exists(STATE_PATH):
+        save_state(light)
     light.set_rgb(255, 0, 0)
 
 
