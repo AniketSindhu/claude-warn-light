@@ -10,7 +10,6 @@
 </p>
 
 ---
-
 ## How it works
 
 Claude Code has a [hooks system](https://docs.anthropic.com/en/docs/claude-code/hooks) that fires shell scripts on lifecycle events. This project wires three of those hooks to your smart bulb:
